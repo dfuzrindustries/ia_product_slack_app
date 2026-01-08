@@ -247,13 +247,13 @@ function extractSnippet(content, query, maxLength = 250) {
 }
 
 // Slash command handler for /product
-app.command('/product', async ({ command, ack, say }) => {
+app.command('/product', async ({ command, ack, respond }) => {
   await ack();
   
   const query = command.text.trim();
   
   if (!query) {
-    await say({
+    await respond({
       text: 'Please provide a search query. Example: `/product authentication`',
       response_type: 'ephemeral'
     });
@@ -273,7 +273,7 @@ app.command('/product', async ({ command, ack, say }) => {
     const results = searchDocs(query, docsCache.data);
     
     if (results.length === 0) {
-      await say({
+      await respond({
         text: `No documentation found for "${query}". Try different keywords.`,
         response_type: 'ephemeral'
       });
@@ -337,7 +337,7 @@ app.command('/product', async ({ command, ack, say }) => {
       ]
     });
     
-    await say({
+    await respond({
       blocks: blocks,
       text: `Search results for "${query}"`
     });
@@ -346,7 +346,7 @@ app.command('/product', async ({ command, ack, say }) => {
     
   } catch (error) {
     console.error('Error handling /product command:', error);
-    await say({
+    await respond({
       text: `Sorry, there was an error searching the documentation: ${error.message}`,
       response_type: 'ephemeral'
     });
