@@ -1,8 +1,9 @@
 const { App } = require('@slack/bolt');
 const express = require('express');
-const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 require('dotenv').config();
+
+// Node 18+ has built-in fetch, no need to import
 
 // Initialize Slack app
 const app = new App({
