@@ -54,40 +54,87 @@ async function discoverPages(baseUrl) {
   
   // Fallback: crawl the site
   async function crawl(url, depth = 0) {
-    if (depth > 3 || visited.has(url)) return;
+    if (depth > 5 || visited.has(url)) {
+      if (depth > 5) console.log(`⚠️  Max depth reached at: ${url}`);
+      return;
+    }
     visited.add(url);
     
     try {
-      console.log(`Crawling: ${url}`);
+      console.log(`\n[Depth ${depth}] Crawling: ${url}`);
       const response = await fetch(url);
-      if (!response.ok) return;
+      if (!response.ok) {
+        console.log(`  ❌ Failed to fetch (${response.status})`);
+        return;
+      }
       
       const html = await response.text();
       const $ = cheerio.load(html);
       
       pages.push(url);
+      console.log(`  ✅ Added page #${pages.length}`);
       
       // Find all internal links
+      const allLinks = [];
       $('a[href]').each((_, elem) => {
-        let href = $(elem).attr('href');
-        if (!href) return;
+        const href = $(elem).attr('href');
+        if (href) allLinks.push(href);
+      });
+      
+      console.log(`  📎 Found ${allLinks.length} total links on this page`);
+      
+      const links = [];
+      allLinks.forEach(href => {
+        const original = href;
         
         // Convert relative URLs to absolute
         if (href.startsWith('/')) {
           href = baseUrl + href;
         } else if (href.startsWith('./')) {
           href = url.substring(0, url.lastIndexOf('/')) + href.substring(1);
+        } else if (href.startsWith('../')) {
+          // Handle parent directory references
+          const urlParts = url.split('/');
+          urlParts.pop(); // remove current page
+          const upLevels = (href.match(/\.\.\//g) || []).length;
+          for (let i = 0; i < upLevels; i++) {
+            urlParts.pop();
+          }
+          href = urlParts.join('/') + '/' + href.replace(/\.\.\//g, '');
         } else if (!href.startsWith('http')) {
           href = url.substring(0, url.lastIndexOf('/') + 1) + href;
         }
         
-        // Only crawl internal links
-        if (href.startsWith(baseUrl) && !visited.has(href) && !href.includes('#')) {
-          crawl(href, depth + 1);
+        // Remove trailing slashes and fragments for comparison
+        const cleanHref = href.replace(/\/$/, '').split('#')[0];
+        const cleanBase = baseUrl.replace(/\/$/, '');
+        
+        // Filter logic
+        if (!cleanHref.startsWith(cleanBase)) {
+          console.log(`    ⊘ Skipped (external): ${original} → ${href}`);
+          return;
         }
+        if (visited.has(cleanHref)) {
+          console.log(`    ⊘ Skipped (visited): ${original}`);
+          return;
+        }
+        if (href.includes('#') && href.split('#')[0] === url.split('#')[0]) {
+          console.log(`    ⊘ Skipped (same page anchor): ${original}`);
+          return;
+        }
+        
+        console.log(`    ✓ Will crawl: ${original} → ${cleanHref}`);
+        links.push(cleanHref);
       });
+      
+      console.log(`  🔗 ${links.length} links to crawl at next depth`);
+      
+      // Crawl links sequentially
+      for (const link of links) {
+        await crawl(link, depth + 1);
+      }
     } catch (error) {
-      console.error(`Error crawling ${url}:`, error.message);
+      console.error(`  ❌ Error crawling ${url}:`, error.message);
     }
   }
   
@@ -206,13 +253,13 @@ function searchDocs(query, docs) {
   })
   .filter(doc => doc.score > 0)
   .sort((a, b) => b.score - a.score)
-  .slice(0, 5);
+  .slice(0, 10); // Show top 10 results
   
   return results;
 }
 
 // Function to extract relevant snippet
-function extractSnippet(content, query, maxLength = 250) {
+function extractSnippet(content, query, maxLength = 500) {
   const words = content.split(' ');
   const queryLower = query.toLowerCase();
   const queryTerms = queryLower.split(' ').filter(term => term.length > 2);
@@ -232,12 +279,12 @@ function extractSnippet(content, query, maxLength = 250) {
   }
   
   if (bestIndex === -1) {
-    return words.slice(0, 40).join(' ') + '...';
+    return words.slice(0, 80).join(' ') + '...';
   }
   
-  // Get context around the match
-  const start = Math.max(0, bestIndex - 15);
-  const end = Math.min(words.length, bestIndex + 25);
+  // Get more context around the match (larger snippet)
+  const start = Math.max(0, bestIndex - 30);
+  const end = Math.min(words.length, bestIndex + 50);
   let snippet = words.slice(start, end).join(' ');
   
   if (start > 0) snippet = '...' + snippet;
@@ -269,8 +316,12 @@ app.command('/product', async ({ command, ack, respond }) => {
       docsCache.lastUpdated = now;
     }
     
+    console.log(`Searching ${docsCache.data.length} pages for: "${query}"`);
+    
     // Search documentation
     const results = searchDocs(query, docsCache.data);
+    
+    console.log(`Search returned ${results.length} results`);
     
     if (results.length === 0) {
       await respond({
@@ -302,23 +353,23 @@ app.command('/product', async ({ command, ack, respond }) => {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `*${index + 1}. ${result.title}*\n_${result.path}_`
+            text: `*${index + 1}. ${result.title}*`
+          },
+          accessory: {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: 'View Full Page'
+            },
+            url: result.url,
+            action_id: `view_doc_${index}`
           }
         },
         {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `${snippet}`
-          },
-          accessory: {
-            type: 'button',
-            text: {
-              type: 'plain_text',
-              text: 'View Page'
-            },
-            url: result.url,
-            action_id: `view_doc_${index}`
+            text: snippet
           }
         },
         {
@@ -440,7 +491,14 @@ healthCheckApp.get('/', (req, res) => {
   try {
     docsCache.data = await fetchDocumentation();
     docsCache.lastUpdated = Date.now();
-    console.log(`✅ Loaded ${docsCache.data.length} documentation pages from ${DOCS_BASE_URL}`);
+    console.log(`\n✅ Successfully loaded ${docsCache.data.length} documentation pages from ${DOCS_BASE_URL}`);
+    console.log(`\nPage titles loaded:`);
+    docsCache.data.slice(0, 10).forEach((doc, i) => {
+      console.log(`  ${i + 1}. ${doc.title} (${doc.url})`);
+    });
+    if (docsCache.data.length > 10) {
+      console.log(`  ... and ${docsCache.data.length - 10} more pages`);
+    }
   } catch (error) {
     console.error('⚠️  Failed to preload documentation:', error.message);
     console.error('The bot will still start, but searches may fail until docs are loaded.');
