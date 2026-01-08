@@ -1,6 +1,7 @@
 const { App } = require('@slack/bolt');
-const { Octokit } = require('@octokit/rest');
 const express = require('express');
+const fetch = require('node-fetch');
+const cheerio = require('cheerio');
 require('dotenv').config();
 
 // Initialize Slack app
@@ -11,17 +12,10 @@ const app = new App({
   appToken: process.env.SLACK_APP_TOKEN
 });
 
-// Initialize GitHub client
-const octokit = new Octokit({
-  auth: process.env.GITHUB_TOKEN
-});
+// Configuration for your GitHub Pages site
+const DOCS_BASE_URL = process.env.DOCS_BASE_URL; // e.g., https://username.github.io/repo-name
 
-// Configuration for your GitHub repo
-const GITHUB_OWNER = process.env.GITHUB_OWNER;
-const GITHUB_REPO = process.env.GITHUB_REPO;
-const DOCS_PATH = process.env.DOCS_PATH || 'docs'; // Default path to docs in repo
-
-// Cache for documentation to avoid hitting GitHub API too frequently
+// Cache for documentation
 let docsCache = {
   data: [],
   lastUpdated: null
@@ -29,50 +23,145 @@ let docsCache = {
 
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
-// Function to fetch all markdown files from GitHub
+// Function to discover all documentation pages from sitemap or index
+async function discoverPages(baseUrl) {
+  const pages = [];
+  const visited = new Set();
+  
+  // Try to fetch sitemap.xml first
+  try {
+    const sitemapUrl = `${baseUrl}/sitemap.xml`;
+    const response = await fetch(sitemapUrl);
+    if (response.ok) {
+      const xml = await response.text();
+      const urlMatches = xml.match(/<loc>(.*?)<\/loc>/g);
+      if (urlMatches) {
+        urlMatches.forEach(match => {
+          const url = match.replace(/<\/?loc>/g, '');
+          if (url.startsWith(baseUrl)) {
+            pages.push(url);
+          }
+        });
+        console.log(`Found ${pages.length} pages from sitemap`);
+        return pages;
+      }
+    }
+  } catch (error) {
+    console.log('No sitemap found, crawling instead...');
+  }
+  
+  // Fallback: crawl the site starting from the base URL
+  async function crawl(url, depth = 0) {
+    if (depth > 3 || visited.has(url)) return; // Limit crawl depth
+    visited.add(url);
+    
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return;
+      
+      const html = await response.text();
+      const $ = cheerio.load(html);
+      
+      pages.push(url);
+      
+      // Find all internal links
+      $('a[href]').each((_, elem) => {
+        let href = $(elem).attr('href');
+        if (!href) return;
+        
+        // Convert relative URLs to absolute
+        if (href.startsWith('/')) {
+          href = baseUrl + href;
+        } else if (href.startsWith('./')) {
+          href = url.substring(0, url.lastIndexOf('/')) + href.substring(1);
+        } else if (!href.startsWith('http')) {
+          href = url.substring(0, url.lastIndexOf('/') + 1) + href;
+        }
+        
+        // Only crawl internal links
+        if (href.startsWith(baseUrl) && !visited.has(href) && !href.includes('#')) {
+          crawl(href, depth + 1);
+        }
+      });
+    } catch (error) {
+      console.error(`Error crawling ${url}:`, error.message);
+    }
+  }
+  
+  await crawl(baseUrl);
+  console.log(`Discovered ${pages.length} pages by crawling`);
+  return pages;
+}
+
+// Function to extract text content from HTML
+function extractTextFromHtml(html, url) {
+  const $ = cheerio.load(html);
+  
+  // Remove scripts, styles, and navigation
+  $('script, style, nav, header, footer, .navigation').remove();
+  
+  // Get the main content - try common selectors
+  let content = '';
+  const contentSelectors = ['main', 'article', '.content', '.markdown-body', '#content', 'body'];
+  
+  for (const selector of contentSelectors) {
+    const element = $(selector);
+    if (element.length > 0) {
+      content = element.text();
+      break;
+    }
+  }
+  
+  if (!content) {
+    content = $('body').text();
+  }
+  
+  // Clean up whitespace
+  content = content.replace(/\s+/g, ' ').trim();
+  
+  // Extract title
+  let title = $('h1').first().text() || $('title').text() || url.split('/').pop();
+  title = title.replace(/\s+/g, ' ').trim();
+  
+  return { title, content };
+}
+
+// Function to fetch all documentation from GitHub Pages
 async function fetchDocumentation() {
   try {
-    console.log('Fetching documentation from GitHub...');
-    const { data: tree } = await octokit.rest.git.getTree({
-      owner: GITHUB_OWNER,
-      repo: GITHUB_REPO,
-      tree_sha: 'main',
-      recursive: true
-    });
-
-    // Filter for markdown files in the docs path
-    const docFiles = tree.tree.filter(item => 
-      item.path.startsWith(DOCS_PATH) && 
-      (item.path.endsWith('.md') || item.path.endsWith('.markdown')) &&
-      item.type === 'blob'
-    );
-
-    // Fetch content for each documentation file
+    console.log('Fetching documentation from GitHub Pages...');
+    
+    if (!DOCS_BASE_URL) {
+      throw new Error('DOCS_BASE_URL not configured');
+    }
+    
+    // Discover all pages
+    const pageUrls = await discoverPages(DOCS_BASE_URL);
+    
+    // Fetch content for each page
     const docs = await Promise.all(
-      docFiles.map(async (file) => {
+      pageUrls.map(async (url) => {
         try {
-          const { data } = await octokit.rest.repos.getContent({
-            owner: GITHUB_OWNER,
-            repo: GITHUB_REPO,
-            path: file.path
-          });
-
-          const content = Buffer.from(data.content, 'base64').toString('utf-8');
+          const response = await fetch(url);
+          if (!response.ok) return null;
+          
+          const html = await response.text();
+          const { title, content } = extractTextFromHtml(html, url);
           
           return {
-            path: file.path,
-            name: file.path.split('/').pop().replace(/\.md$/, ''),
+            url: url,
+            title: title,
             content: content,
-            url: data.html_url
+            path: url.replace(DOCS_BASE_URL, '')
           };
         } catch (error) {
-          console.error(`Error fetching ${file.path}:`, error.message);
+          console.error(`Error fetching ${url}:`, error.message);
           return null;
         }
       })
     );
-
-    return docs.filter(doc => doc !== null);
+    
+    return docs.filter(doc => doc !== null && doc.content.length > 0);
   } catch (error) {
     console.error('Error fetching documentation:', error);
     throw error;
@@ -81,17 +170,17 @@ async function fetchDocumentation() {
 
 // Function to search documentation
 function searchDocs(query, docs) {
-  const searchTerms = query.toLowerCase().split(' ');
+  const searchTerms = query.toLowerCase().split(' ').filter(term => term.length > 2);
   
   const results = docs.map(doc => {
     let score = 0;
     const contentLower = doc.content.toLowerCase();
-    const nameLower = doc.name.toLowerCase();
+    const titleLower = doc.title.toLowerCase();
     
     searchTerms.forEach(term => {
-      // Higher score for matches in file name
-      if (nameLower.includes(term)) {
-        score += 10;
+      // Higher score for matches in title
+      if (titleLower.includes(term)) {
+        score += 20;
       }
       
       // Score for matches in content
@@ -109,39 +198,46 @@ function searchDocs(query, docs) {
 }
 
 // Function to extract relevant snippet from content
-function extractSnippet(content, query, maxLength = 200) {
-  const lines = content.split('\n');
+function extractSnippet(content, query, maxLength = 250) {
+  const words = content.split(' ');
   const queryLower = query.toLowerCase();
+  const queryTerms = queryLower.split(' ').filter(term => term.length > 2);
   
-  // Find the first line that contains any search term
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].toLowerCase().includes(queryLower.split(' ')[0])) {
-      // Get surrounding context
-      const start = Math.max(0, i - 1);
-      const end = Math.min(lines.length, i + 3);
-      let snippet = lines.slice(start, end).join('\n');
-      
-      if (snippet.length > maxLength) {
-        snippet = snippet.substring(0, maxLength) + '...';
-      }
-      
-      return snippet;
+  // Find the first occurrence of any search term
+  let bestIndex = -1;
+  for (let i = 0; i < words.length; i++) {
+    const wordLower = words[i].toLowerCase();
+    if (queryTerms.some(term => wordLower.includes(term))) {
+      bestIndex = i;
+      break;
     }
   }
   
-  // If no match found, return beginning of content
-  return content.substring(0, maxLength) + '...';
+  if (bestIndex === -1) {
+    // No match found, return beginning
+    return words.slice(0, 40).join(' ') + '...';
+  }
+  
+  // Get context around the match
+  const start = Math.max(0, bestIndex - 15);
+  const end = Math.min(words.length, bestIndex + 25);
+  let snippet = words.slice(start, end).join(' ');
+  
+  if (start > 0) snippet = '...' + snippet;
+  if (end < words.length) snippet = snippet + '...';
+  
+  return snippet;
 }
 
 // Slash command handler
-app.command('/docs', async ({ command, ack, say, client }) => {
+app.command('/product', async ({ command, ack, say }) => {
   await ack();
   
   const query = command.text.trim();
   
   if (!query) {
     await say({
-      text: 'Please provide a search query. Example: `/docs authentication`',
+      text: 'Please provide a search query. Example: `/product authentication`',
       response_type: 'ephemeral'
     });
     return;
@@ -188,20 +284,20 @@ app.command('/docs', async ({ command, ack, say, client }) => {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `*${index + 1}. ${result.name}*\n\`${result.path}\``
+            text: `*${index + 1}. ${result.title}*\n_${result.path}_`
           }
         },
         {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `\`\`\`${snippet}\`\`\``
+            text: `${snippet}`
           },
           accessory: {
             type: 'button',
             text: {
               type: 'plain_text',
-              text: 'View on GitHub'
+              text: 'View Page'
             },
             url: result.url,
             action_id: `view_doc_${index}`
@@ -218,7 +314,7 @@ app.command('/docs', async ({ command, ack, say, client }) => {
       elements: [
         {
           type: 'mrkdwn',
-          text: `Found ${results.length} result(s) | <https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}|View all docs on GitHub>`
+          text: `Found ${results.length} result(s) | <${DOCS_BASE_URL}|View all docs>`
         }
       ]
     });
@@ -237,7 +333,7 @@ app.command('/docs', async ({ command, ack, say, client }) => {
   }
 });
 
-// App home handler (optional - shows when user opens the app)
+// App home handler
 app.event('app_home_opened', async ({ event, client }) => {
   try {
     await client.views.publish({
@@ -266,7 +362,7 @@ app.event('app_home_opened', async ({ event, client }) => {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: '*How to use:*\n• Type `/docs [search query]` to search documentation\n• Example: `/docs api authentication`\n\nDocumentation is synced from our GitHub repository.'
+              text: '*How to use:*\n• Type `/product [search query]` to search documentation\n• Example: `/product api authentication`\n\nDocumentation is synced from our GitHub Pages site.'
             }
           },
           {
@@ -276,10 +372,10 @@ app.event('app_home_opened', async ({ event, client }) => {
                 type: 'button',
                 text: {
                   type: 'plain_text',
-                  text: 'View Docs on GitHub'
+                  text: 'View Documentation'
                 },
-                url: `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`,
-                action_id: 'view_github'
+                url: DOCS_BASE_URL,
+                action_id: 'view_docs'
               }
             ]
           }
@@ -291,15 +387,15 @@ app.event('app_home_opened', async ({ event, client }) => {
   }
 });
 
-// Health check endpoint (useful for Railway monitoring)
-const express = require('express');
+// Health check endpoint
 const healthCheckApp = express();
 
 healthCheckApp.get('/health', (req, res) => {
   res.status(200).json({
     status: 'ok',
     docsLoaded: docsCache.data.length,
-    lastUpdated: docsCache.lastUpdated ? new Date(docsCache.lastUpdated).toISOString() : 'never'
+    lastUpdated: docsCache.lastUpdated ? new Date(docsCache.lastUpdated).toISOString() : 'never',
+    docsUrl: DOCS_BASE_URL
   });
 });
 
@@ -312,7 +408,7 @@ healthCheckApp.get('/health', (req, res) => {
     console.log(`🏥 Health check endpoint running at http://localhost:${port}/health`);
   });
   
-  // Start Slack app (Socket Mode doesn't need the port, but we keep it for compatibility)
+  // Start Slack app
   await app.start();
   console.log(`⚡️ Slack Documentation Bot is running`);
   
@@ -320,7 +416,7 @@ healthCheckApp.get('/health', (req, res) => {
   try {
     docsCache.data = await fetchDocumentation();
     docsCache.lastUpdated = Date.now();
-    console.log(`✅ Loaded ${docsCache.data.length} documentation files`);
+    console.log(`✅ Loaded ${docsCache.data.length} documentation pages from ${DOCS_BASE_URL}`);
   } catch (error) {
     console.error('⚠️  Failed to preload documentation:', error.message);
   }
