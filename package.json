@@ -1,0 +1,20 @@
+{
+  "name": "slack-docs-app",
+  "version": "1.0.0",
+  "description": "Slack app to search and display GitHub-hosted product documentation",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "@slack/bolt": "^3.17.1",
+    "@octokit/rest": "^20.0.2",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
