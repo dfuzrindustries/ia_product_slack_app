@@ -13,7 +13,7 @@ const app = new App({
 });
 
 // Configuration for your GitHub Pages site
-const DOCS_BASE_URL = process.env.DOCS_BASE_URL; // e.g., https://username.github.io/repo-name
+const DOCS_BASE_URL = process.env.DOCS_BASE_URL;
 
 // Cache for documentation
 let docsCache = {
@@ -23,7 +23,7 @@ let docsCache = {
 
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
-// Function to discover all documentation pages from sitemap or index
+// Function to discover all documentation pages
 async function discoverPages(baseUrl) {
   const pages = [];
   const visited = new Set();
@@ -31,6 +31,7 @@ async function discoverPages(baseUrl) {
   // Try to fetch sitemap.xml first
   try {
     const sitemapUrl = `${baseUrl}/sitemap.xml`;
+    console.log(`Looking for sitemap at: ${sitemapUrl}`);
     const response = await fetch(sitemapUrl);
     if (response.ok) {
       const xml = await response.text();
@@ -47,15 +48,16 @@ async function discoverPages(baseUrl) {
       }
     }
   } catch (error) {
-    console.log('No sitemap found, crawling instead...');
+    console.log('No sitemap found, will crawl instead...');
   }
   
-  // Fallback: crawl the site starting from the base URL
+  // Fallback: crawl the site
   async function crawl(url, depth = 0) {
-    if (depth > 3 || visited.has(url)) return; // Limit crawl depth
+    if (depth > 3 || visited.has(url)) return;
     visited.add(url);
     
     try {
+      console.log(`Crawling: ${url}`);
       const response = await fetch(url);
       if (!response.ok) return;
       
@@ -100,7 +102,7 @@ function extractTextFromHtml(html, url) {
   // Remove scripts, styles, and navigation
   $('script, style, nav, header, footer, .navigation').remove();
   
-  // Get the main content - try common selectors
+  // Get the main content
   let content = '';
   const contentSelectors = ['main', 'article', '.content', '.markdown-body', '#content', 'body'];
   
@@ -126,17 +128,24 @@ function extractTextFromHtml(html, url) {
   return { title, content };
 }
 
-// Function to fetch all documentation from GitHub Pages
+// Function to fetch all documentation
 async function fetchDocumentation() {
   try {
     console.log('Fetching documentation from GitHub Pages...');
     
     if (!DOCS_BASE_URL) {
-      throw new Error('DOCS_BASE_URL not configured');
+      throw new Error('DOCS_BASE_URL environment variable not set');
     }
+    
+    console.log(`Base URL: ${DOCS_BASE_URL}`);
     
     // Discover all pages
     const pageUrls = await discoverPages(DOCS_BASE_URL);
+    
+    if (pageUrls.length === 0) {
+      console.warn('No pages discovered!');
+      return [];
+    }
     
     // Fetch content for each page
     const docs = await Promise.all(
@@ -152,7 +161,7 @@ async function fetchDocumentation() {
             url: url,
             title: title,
             content: content,
-            path: url.replace(DOCS_BASE_URL, '')
+            path: url.replace(DOCS_BASE_URL, '') || '/'
           };
         } catch (error) {
           console.error(`Error fetching ${url}:`, error.message);
@@ -172,18 +181,22 @@ async function fetchDocumentation() {
 function searchDocs(query, docs) {
   const searchTerms = query.toLowerCase().split(' ').filter(term => term.length > 2);
   
+  if (searchTerms.length === 0) {
+    searchTerms.push(query.toLowerCase());
+  }
+  
   const results = docs.map(doc => {
     let score = 0;
     const contentLower = doc.content.toLowerCase();
     const titleLower = doc.title.toLowerCase();
     
     searchTerms.forEach(term => {
-      // Higher score for matches in title
+      // Higher score for title matches
       if (titleLower.includes(term)) {
         score += 20;
       }
       
-      // Score for matches in content
+      // Score for content matches
       const matches = (contentLower.match(new RegExp(term, 'g')) || []).length;
       score += matches;
     });
@@ -192,18 +205,22 @@ function searchDocs(query, docs) {
   })
   .filter(doc => doc.score > 0)
   .sort((a, b) => b.score - a.score)
-  .slice(0, 5); // Top 5 results
+  .slice(0, 5);
   
   return results;
 }
 
-// Function to extract relevant snippet from content
+// Function to extract relevant snippet
 function extractSnippet(content, query, maxLength = 250) {
   const words = content.split(' ');
   const queryLower = query.toLowerCase();
   const queryTerms = queryLower.split(' ').filter(term => term.length > 2);
   
-  // Find the first occurrence of any search term
+  if (queryTerms.length === 0) {
+    queryTerms.push(queryLower);
+  }
+  
+  // Find first occurrence of any search term
   let bestIndex = -1;
   for (let i = 0; i < words.length; i++) {
     const wordLower = words[i].toLowerCase();
@@ -214,7 +231,6 @@ function extractSnippet(content, query, maxLength = 250) {
   }
   
   if (bestIndex === -1) {
-    // No match found, return beginning
     return words.slice(0, 40).join(' ') + '...';
   }
   
@@ -229,7 +245,7 @@ function extractSnippet(content, query, maxLength = 250) {
   return snippet;
 }
 
-// Slash command handler
+// Slash command handler for /product
 app.command('/product', async ({ command, ack, say }) => {
   await ack();
   
@@ -247,6 +263,7 @@ app.command('/product', async ({ command, ack, say }) => {
     // Check cache and refresh if needed
     const now = Date.now();
     if (!docsCache.lastUpdated || (now - docsCache.lastUpdated) > CACHE_DURATION) {
+      console.log('Refreshing documentation cache...');
       docsCache.data = await fetchDocumentation();
       docsCache.lastUpdated = now;
     }
@@ -324,8 +341,10 @@ app.command('/product', async ({ command, ack, say }) => {
       text: `Search results for "${query}"`
     });
     
+    console.log(`Handled search for: "${query}" - found ${results.length} results`);
+    
   } catch (error) {
-    console.error('Error handling /docs command:', error);
+    console.error('Error handling /product command:', error);
     await say({
       text: `Sorry, there was an error searching the documentation: ${error.message}`,
       response_type: 'ephemeral'
@@ -374,7 +393,7 @@ app.event('app_home_opened', async ({ event, client }) => {
                   type: 'plain_text',
                   text: 'View Documentation'
                 },
-                url: DOCS_BASE_URL,
+                url: DOCS_BASE_URL || 'https://github.com',
                 action_id: 'view_docs'
               }
             ]
@@ -399,18 +418,22 @@ healthCheckApp.get('/health', (req, res) => {
   });
 });
 
+healthCheckApp.get('/', (req, res) => {
+  res.send('Slack Documentation Bot is running! Use /product command in Slack.');
+});
+
 // Start the app
 (async () => {
   const port = process.env.PORT || 3000;
   
   // Start health check server
   healthCheckApp.listen(port, () => {
-    console.log(`🏥 Health check endpoint running at http://localhost:${port}/health`);
+    console.log(`🏥 Health check running at http://localhost:${port}/health`);
   });
   
   // Start Slack app
   await app.start();
-  console.log(`⚡️ Slack Documentation Bot is running`);
+  console.log(`⚡️ Slack Documentation Bot is running!`);
   
   // Preload documentation cache
   try {
@@ -419,5 +442,6 @@ healthCheckApp.get('/health', (req, res) => {
     console.log(`✅ Loaded ${docsCache.data.length} documentation pages from ${DOCS_BASE_URL}`);
   } catch (error) {
     console.error('⚠️  Failed to preload documentation:', error.message);
+    console.error('The bot will still start, but searches may fail until docs are loaded.');
   }
 })();
