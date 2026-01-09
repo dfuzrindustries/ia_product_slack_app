@@ -311,9 +311,12 @@ function extractSnippets(content, query, maxSnippets = 3) {
       if (end < words.length) snippet = snippet + '...';
       
       // Bold the matched word (Slack markdown uses *)
+      // Escape special regex characters in the matched word
       const matchedWord = words[i];
+      const escapedWord = matchedWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
       snippet = snippet.replace(
-        new RegExp(`\\b${matchedWord}\\b`, 'gi'), 
+        new RegExp(`\\b${escapedWord}\\b`, 'gi'), 
         `*${matchedWord}*`
       );
       
