@@ -163,12 +163,12 @@ async function discoverPages(baseUrl) {
 function extractTextFromHtml(html, url) {
   const $ = cheerio.load(html);
   
-  // Remove scripts, styles, and navigation
-  $('script, style, nav, header, footer, .navigation').remove();
+  // Remove scripts, styles, navigation, and common doc site elements
+  $('script, style, nav, header, footer, .navigation, .navbar, .menu, .sidebar, .toc, .breadcrumb, .page-header, .page-footer').remove();
   
   // Get the main content
   let content = '';
-  const contentSelectors = ['main', 'article', '.content', '.markdown-body', '#content', 'body'];
+  const contentSelectors = ['main', 'article', '.content', '.markdown-body', '#content', '.post-content', '.doc-content', 'body'];
   
   for (const selector of contentSelectors) {
     const element = $(selector);
@@ -185,9 +185,20 @@ function extractTextFromHtml(html, url) {
   // Clean up whitespace
   content = content.replace(/\s+/g, ' ').trim();
   
+  // Remove common navigation patterns specific to this site
+  content = content.replace(/ia-customer-lifecycle-md\s+M1\s+M2\s+M3\s+Day 1\s+POC\s+Pilot\s+Program\s+Partnership/gi, '');
+  content = content.replace(/Back to Home\s+M1\s+M2\s+M3\s+Day 1\s+POC\s+Pilot\s+Program\s+Partnership/gi, '');
+  
+  // Clean up multiple spaces after removals
+  content = content.replace(/\s+/g, ' ').trim();
+  
   // Extract title
   let title = $('h1').first().text() || $('title').text() || url.split('/').pop();
   title = title.replace(/\s+/g, ' ').trim();
+  
+  // Remove navigation text from title too
+  title = title.replace(/ia-customer-lifecycle-md\s+M1\s+M2\s+M3\s+Day 1\s+POC\s+Pilot\s+Program\s+Partnership/gi, '').trim();
+  title = title.replace(/Back to Home\s+M1\s+M2\s+M3\s+Day 1\s+POC\s+Pilot\s+Program\s+Partnership/gi, '').trim();
   
   return { title, content };
 }
