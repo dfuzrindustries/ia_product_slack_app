@@ -29,10 +29,15 @@ async function discoverPages(baseUrl) {
   const pages = [];
   const visited = new Set();
   
+  // Normalize base URL - remove trailing slash
+  baseUrl = baseUrl.replace(/\/$/, '');
+  
+  console.log(`\n=== Starting page discovery for: ${baseUrl} ===`);
+  
   // Try to fetch sitemap.xml first
   try {
     const sitemapUrl = `${baseUrl}/sitemap.xml`;
-    console.log(`Looking for sitemap at: ${sitemapUrl}`);
+    console.log(`Checking for sitemap at: ${sitemapUrl}`);
     const response = await fetch(sitemapUrl);
     if (response.ok) {
       const xml = await response.text();
@@ -44,12 +49,14 @@ async function discoverPages(baseUrl) {
             pages.push(url);
           }
         });
-        console.log(`Found ${pages.length} pages from sitemap`);
+        console.log(`✅ Found ${pages.length} pages from sitemap`);
         return pages;
       }
+    } else {
+      console.log(`No sitemap found (${response.status}), will crawl instead`);
     }
   } catch (error) {
-    console.log('No sitemap found, will crawl instead...');
+    console.log(`Sitemap check failed: ${error.message}, will crawl instead`);
   }
   
   // Fallback: crawl the site
@@ -87,10 +94,17 @@ async function discoverPages(baseUrl) {
       allLinks.forEach(href => {
         const original = href;
         
+        // Parse the base URL to get origin and path
+        const baseUrlObj = new URL(baseUrl);
+        const baseOrigin = baseUrlObj.origin; // https://dfuzrindustries.github.io
+        const basePath = baseUrlObj.pathname; // /ia-customer-lifecycle-md/
+        
         // Convert relative URLs to absolute
         if (href.startsWith('/')) {
-          href = baseUrl + href;
+          // Absolute path from root - use origin + href
+          href = baseOrigin + href;
         } else if (href.startsWith('./')) {
+          // Relative to current directory
           href = url.substring(0, url.lastIndexOf('/')) + href.substring(1);
         } else if (href.startsWith('../')) {
           // Handle parent directory references
@@ -102,7 +116,9 @@ async function discoverPages(baseUrl) {
           }
           href = urlParts.join('/') + '/' + href.replace(/\.\.\//g, '');
         } else if (!href.startsWith('http')) {
-          href = url.substring(0, url.lastIndexOf('/') + 1) + href;
+          // Relative path - append to current URL directory
+          const currentDir = url.endsWith('/') ? url : url.substring(0, url.lastIndexOf('/') + 1);
+          href = currentDir + href;
         }
         
         // Remove trailing slashes and fragments for comparison
