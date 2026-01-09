@@ -269,14 +269,14 @@ function searchDocs(query, docs) {
   })
   .filter(doc => doc.score > 0)
   .sort((a, b) => b.score - a.score)
-  .slice(0, 10); // Show top 10 results
+  .slice(0, 5); // Top 5 results with detailed snippets
   
   return results;
 }
 
-// Function to extract relevant snippet
-function extractSnippet(content, query, maxLength = 500) {
-  const words = content.split(' ');
+// Function to extract relevant snippets with context
+function extractSnippets(content, query, maxSnippets = 3) {
+  const words = content.split(/\s+/);
   const queryLower = query.toLowerCase();
   const queryTerms = queryLower.split(' ').filter(term => term.length > 2);
   
@@ -284,29 +284,52 @@ function extractSnippet(content, query, maxLength = 500) {
     queryTerms.push(queryLower);
   }
   
-  // Find first occurrence of any search term
-  let bestIndex = -1;
+  const snippets = [];
+  const usedIndices = new Set();
+  
+  // Find all occurrences of search terms
   for (let i = 0; i < words.length; i++) {
     const wordLower = words[i].toLowerCase();
-    if (queryTerms.some(term => wordLower.includes(term))) {
-      bestIndex = i;
-      break;
+    
+    // Check if this word contains any search term
+    const matchedTerm = queryTerms.find(term => wordLower.includes(term));
+    
+    if (matchedTerm && !usedIndices.has(i)) {
+      // Extract 10 words before and 10 words after
+      const start = Math.max(0, i - 10);
+      const end = Math.min(words.length, i + 11); // +11 to include the matched word
+      
+      // Mark these indices as used to avoid duplicate snippets
+      for (let j = start; j < end; j++) {
+        usedIndices.add(j);
+      }
+      
+      let snippet = words.slice(start, end).join(' ');
+      
+      // Add ellipsis if not at document boundaries
+      if (start > 0) snippet = '...' + snippet;
+      if (end < words.length) snippet = snippet + '...';
+      
+      // Bold the matched word (Slack markdown uses *)
+      const matchedWord = words[i];
+      snippet = snippet.replace(
+        new RegExp(`\\b${matchedWord}\\b`, 'gi'), 
+        `*${matchedWord}*`
+      );
+      
+      snippets.push(snippet);
+      
+      if (snippets.length >= maxSnippets) break;
     }
   }
   
-  if (bestIndex === -1) {
-    return words.slice(0, 80).join(' ') + '...';
+  // If no matches found, return beginning of content
+  if (snippets.length === 0) {
+    const snippet = words.slice(0, 20).join(' ') + '...';
+    snippets.push(snippet);
   }
   
-  // Get more context around the match (larger snippet)
-  const start = Math.max(0, bestIndex - 30);
-  const end = Math.min(words.length, bestIndex + 50);
-  let snippet = words.slice(start, end).join(' ');
-  
-  if (start > 0) snippet = '...' + snippet;
-  if (end < words.length) snippet = snippet + '...';
-  
-  return snippet;
+  return snippets;
 }
 
 // Slash command handler for /product
@@ -362,36 +385,33 @@ app.command('/product', async ({ command, ack, respond }) => {
     ];
     
     results.forEach((result, index) => {
-      const snippet = extractSnippet(result.content, query);
+      const snippets = extractSnippets(result.content, query, 3);
       
+      // Format the page title and URL
       blocks.push(
         {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `*${index + 1}. ${result.title}*`
-          },
-          accessory: {
-            type: 'button',
-            text: {
-              type: 'plain_text',
-              text: 'View Full Page'
-            },
-            url: result.url,
-            action_id: `view_doc_${index}`
+            text: `*${index + 1}. ${result.title}*\n<${result.url}|View page →>`
           }
-        },
-        {
+        }
+      );
+      
+      // Add each snippet as a separate section
+      snippets.forEach((snippet, idx) => {
+        blocks.push({
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: snippet
+            text: `>${snippet}`
           }
-        },
-        {
-          type: 'divider'
-        }
-      );
+        });
+      });
+      
+      blocks.push({
+        type: 'divider'
+      });
     });
     
     blocks.push({
@@ -399,7 +419,7 @@ app.command('/product', async ({ command, ack, respond }) => {
       elements: [
         {
           type: 'mrkdwn',
-          text: `Found ${results.length} result(s) | <${DOCS_BASE_URL}|View all docs>`
+          text: `Found ${results.length} relevant page${results.length === 1 ? '' : 's'} • Searched ${docsCache.data.length} total pages`
         }
       ]
     });
