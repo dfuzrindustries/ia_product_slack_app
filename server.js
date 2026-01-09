@@ -192,11 +192,20 @@ function extractTextFromHtml(html, url) {
   // Clean up multiple spaces after removals
   content = content.replace(/\s+/g, ' ').trim();
   
-  // Extract title
-  let title = $('h1').first().text() || $('title').text() || url.split('/').pop();
+  // Extract title - first try to get it from PAGE_TITLE comment
+  let title = '';
+  const pageTitleMatch = html.match(/<!--\s*PAGE_TITLE:\s*(.+?)\s*-->/i);
+  if (pageTitleMatch) {
+    title = pageTitleMatch[1].trim();
+    console.log(`  📄 Found PAGE_TITLE comment: "${title}"`);
+  } else {
+    // Fall back to H1 or title tag
+    title = $('h1').first().text() || $('title').text() || url.split('/').pop();
+  }
+  
   title = title.replace(/\s+/g, ' ').trim();
   
-  // Remove navigation text from title too
+  // Remove navigation text from title
   title = title.replace(/ia-customer-lifecycle-md\s+M1\s+M2\s+M3\s+Day 1\s+POC\s+Pilot\s+Program\s+Partnership/gi, '').trim();
   title = title.replace(/Back to Home\s+M1\s+M2\s+M3\s+Day 1\s+POC\s+Pilot\s+Program\s+Partnership/gi, '').trim();
   
