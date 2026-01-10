@@ -13,12 +13,21 @@ const app = new App({
   appToken: process.env.SLACK_APP_TOKEN
 });
 
-// Configuration for your GitHub Pages site
-const DOCS_BASE_URL = process.env.DOCS_BASE_URL;
+// Configuration for your GitHub Pages sites
+const DOCS_SITES = [
+  {
+    title: 'Customer Lifecycle',
+    url: 'https://dfuzrindustries.github.io/ia-customer-lifecycle-md'
+  },
+  {
+    title: 'Frameworks & References',
+    url: 'https://dfuzrindustries.github.io/ia-frameworks-and-references-md'
+  }
+];
 
 // Cache for documentation
 let docsCache = {
-  data: [],
+  sites: [], // Will store: [{ title, url, pages: [...] }, ...]
   lastUpdated: null
 };
 
@@ -212,194 +221,85 @@ function extractTextFromHtml(html, url) {
   return { title, content };
 }
 
-// Function to fetch all documentation
+// Function to fetch all documentation from all sites
 async function fetchDocumentation() {
   try {
-    console.log('Fetching documentation from GitHub Pages...');
+    console.log('Fetching documentation from all GitHub Pages sites...');
     
-    if (!DOCS_BASE_URL) {
-      throw new Error('DOCS_BASE_URL environment variable not set');
+    const sites = [];
+    
+    for (const site of DOCS_SITES) {
+      console.log(`\n=== Fetching ${site.title} ===`);
+      
+      // Discover all pages for this site
+      const pageUrls = await discoverPages(site.url);
+      
+      if (pageUrls.length === 0) {
+        console.warn(`No pages discovered for ${site.title}!`);
+        continue;
+      }
+      
+      // Fetch content for each page
+      const pages = await Promise.all(
+        pageUrls.map(async (url) => {
+          try {
+            const response = await fetch(url);
+            if (!response.ok) return null;
+            
+            const html = await response.text();
+            const { title, content } = extractTextFromHtml(html, url);
+            
+            return {
+              url: url,
+              title: title,
+              content: content,
+              path: url.replace(site.url, '') || '/'
+            };
+          } catch (error) {
+            console.error(`Error fetching ${url}:`, error.message);
+            return null;
+          }
+        })
+      );
+      
+      const validPages = pages.filter(page => page !== null && page.content.length > 0);
+      
+      sites.push({
+        title: site.title,
+        url: site.url,
+        pages: validPages
+      });
+      
+      console.log(`✅ Loaded ${validPages.length} pages for ${site.title}`);
     }
     
-    console.log(`Base URL: ${DOCS_BASE_URL}`);
-    
-    // Discover all pages
-    const pageUrls = await discoverPages(DOCS_BASE_URL);
-    
-    if (pageUrls.length === 0) {
-      console.warn('No pages discovered!');
-      return [];
-    }
-    
-    // Fetch content for each page
-    const docs = await Promise.all(
-      pageUrls.map(async (url) => {
-        try {
-          const response = await fetch(url);
-          if (!response.ok) return null;
-          
-          const html = await response.text();
-          const { title, content } = extractTextFromHtml(html, url);
-          
-          return {
-            url: url,
-            title: title,
-            content: content,
-            path: url.replace(DOCS_BASE_URL, '') || '/'
-          };
-        } catch (error) {
-          console.error(`Error fetching ${url}:`, error.message);
-          return null;
-        }
-      })
-    );
-    
-    return docs.filter(doc => doc !== null && doc.content.length > 0);
+    return sites;
   } catch (error) {
     console.error('Error fetching documentation:', error);
     throw error;
   }
 }
 
-// Function to search documentation
-function searchDocs(query, docs) {
-  const searchTerms = query.toLowerCase().split(' ').filter(term => term.length > 2);
-  
-  if (searchTerms.length === 0) {
-    searchTerms.push(query.toLowerCase());
-  }
-  
-  const results = docs.map(doc => {
-    let score = 0;
-    const contentLower = doc.content.toLowerCase();
-    const titleLower = doc.title.toLowerCase();
-    
-    searchTerms.forEach(term => {
-      // Higher score for title matches
-      if (titleLower.includes(term)) {
-        score += 20;
-      }
-      
-      // Score for content matches
-      const matches = (contentLower.match(new RegExp(term, 'g')) || []).length;
-      score += matches;
-    });
-    
-    return { ...doc, score };
-  })
-  .filter(doc => doc.score > 0)
-  .sort((a, b) => b.score - a.score)
-  .slice(0, 5); // Top 5 results with detailed snippets
-  
-  return results;
-}
-
-// Function to extract relevant snippets with context
-function extractSnippets(content, query, maxSnippets = 3) {
-  const words = content.split(/\s+/);
-  const queryLower = query.toLowerCase();
-  const queryTerms = queryLower.split(' ').filter(term => term.length > 2);
-  
-  if (queryTerms.length === 0) {
-    queryTerms.push(queryLower);
-  }
-  
-  const snippets = [];
-  const usedIndices = new Set();
-  
-  // Find all occurrences of search terms
-  for (let i = 0; i < words.length; i++) {
-    const wordLower = words[i].toLowerCase();
-    
-    // Check if this word contains any search term
-    const matchedTerm = queryTerms.find(term => wordLower.includes(term));
-    
-    if (matchedTerm && !usedIndices.has(i)) {
-      // Extract 10 words before and 10 words after
-      const start = Math.max(0, i - 10);
-      const end = Math.min(words.length, i + 11); // +11 to include the matched word
-      
-      // Mark these indices as used to avoid duplicate snippets
-      for (let j = start; j < end; j++) {
-        usedIndices.add(j);
-      }
-      
-      let snippet = words.slice(start, end).join(' ');
-      
-      // Add ellipsis if not at document boundaries
-      if (start > 0) snippet = '...' + snippet;
-      if (end < words.length) snippet = snippet + '...';
-      
-      // Bold the matched word (Slack markdown uses *)
-      // Escape special regex characters in the matched word
-      const matchedWord = words[i];
-      const escapedWord = matchedWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
-      snippet = snippet.replace(
-        new RegExp(`\\b${escapedWord}\\b`, 'gi'), 
-        `*${matchedWord}*`
-      );
-      
-      snippets.push(snippet);
-      
-      if (snippets.length >= maxSnippets) break;
-    }
-  }
-  
-  // If no matches found, return beginning of content
-  if (snippets.length === 0) {
-    const snippet = words.slice(0, 20).join(' ') + '...';
-    snippets.push(snippet);
-  }
-  
-  return snippets;
-}
-
-// Slash command handler for /product
+// Slash command handler for /product - displays directory of all docs
 app.command('/product', async ({ command, ack, respond }) => {
   await ack();
-  
-  const query = command.text.trim();
-  
-  if (!query) {
-    await respond({
-      text: 'Please provide a search query. Example: `/product authentication`',
-      response_type: 'ephemeral'
-    });
-    return;
-  }
   
   try {
     // Check cache and refresh if needed
     const now = Date.now();
     if (!docsCache.lastUpdated || (now - docsCache.lastUpdated) > CACHE_DURATION) {
       console.log('Refreshing documentation cache...');
-      docsCache.data = await fetchDocumentation();
+      docsCache.sites = await fetchDocumentation();
       docsCache.lastUpdated = now;
     }
     
-    console.log(`Searching ${docsCache.data.length} pages for: "${query}"`);
-    
-    // Search documentation
-    const results = searchDocs(query, docsCache.data);
-    
-    console.log(`Search returned ${results.length} results`);
-    
-    if (results.length === 0) {
-      await respond({
-        text: `No documentation found for "${query}". Try different keywords.`,
-        response_type: 'ephemeral'
-      });
-      return;
-    }
-    
-    // Build Slack blocks for results
+    // Build directory listing
     const blocks = [
       {
         type: 'header',
         text: {
           type: 'plain_text',
-          text: `📚 Search Results for "${query}"`
+          text: '📚 Product Documentation Directory'
         }
       },
       {
@@ -407,57 +307,77 @@ app.command('/product', async ({ command, ack, respond }) => {
       }
     ];
     
-    results.forEach((result, index) => {
-      const snippets = extractSnippets(result.content, query, 3);
-      
-      // Format the page title and URL
-      blocks.push(
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `*${index + 1}. ${result.title}*\n<${result.url}|View page →>`
-          }
+    // Add each site's pages
+    docsCache.sites.forEach((site, siteIndex) => {
+      // Site title
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*${site.title}*`
         }
-      );
+      });
       
-      // Add each snippet as a separate section
-      snippets.forEach((snippet, idx) => {
+      // Page list
+      if (site.pages.length === 0) {
         blocks.push({
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `>${snippet}`
+            text: '_No pages found_'
           }
         });
-      });
+      } else {
+        // Format pages as a bulleted list with links
+        const pageList = site.pages
+          .map(page => `• <${page.url}|${page.title}>`)
+          .join('\n');
+        
+        blocks.push({
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: pageList
+          }
+        });
+      }
       
-      blocks.push({
-        type: 'divider'
-      });
+      // Add spacing between sites (unless it's the last one)
+      if (siteIndex < docsCache.sites.length - 1) {
+        blocks.push({
+          type: 'divider'
+        });
+      }
     });
     
-    blocks.push({
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: `Found ${results.length} relevant page${results.length === 1 ? '' : 's'} • Searched ${docsCache.data.length} total pages`
-        }
-      ]
-    });
+    // Footer
+    const totalPages = docsCache.sites.reduce((sum, site) => sum + site.pages.length, 0);
+    blocks.push(
+      {
+        type: 'divider'
+      },
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: `${docsCache.sites.length} documentation sites • ${totalPages} total pages`
+          }
+        ]
+      }
+    );
     
     await respond({
       blocks: blocks,
-      text: `Search results for "${query}"`
+      text: 'Product Documentation Directory'
     });
     
-    console.log(`Handled search for: "${query}" - found ${results.length} results`);
+    console.log(`Displayed directory with ${totalPages} pages across ${docsCache.sites.length} sites`);
     
   } catch (error) {
     console.error('Error handling /product command:', error);
     await respond({
-      text: `Sorry, there was an error searching the documentation: ${error.message}`,
+      text: `Sorry, there was an error loading the documentation directory: ${error.message}`,
       response_type: 'ephemeral'
     });
   }
@@ -492,7 +412,7 @@ app.event('app_home_opened', async ({ event, client }) => {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: '*How to use:*\n• Type `/product [search query]` to search documentation\n• Example: `/product api authentication`\n\nDocumentation is synced from our GitHub Pages site.'
+              text: '*How to use:*\n• Type `/product` to view the documentation directory\n• All pages from multiple documentation sites organized in one place\n\nDocumentation is automatically synced from GitHub Pages.'
             }
           },
           {
@@ -502,10 +422,19 @@ app.event('app_home_opened', async ({ event, client }) => {
                 type: 'button',
                 text: {
                   type: 'plain_text',
-                  text: 'View Documentation'
+                  text: 'View Customer Lifecycle'
                 },
-                url: DOCS_BASE_URL || 'https://github.com',
-                action_id: 'view_docs'
+                url: 'https://dfuzrindustries.github.io/ia-customer-lifecycle-md',
+                action_id: 'view_docs_1'
+              },
+              {
+                type: 'button',
+                text: {
+                  type: 'plain_text',
+                  text: 'View Frameworks & References'
+                },
+                url: 'https://dfuzrindustries.github.io/ia-frameworks-and-references-md',
+                action_id: 'view_docs_2'
               }
             ]
           }
@@ -521,11 +450,13 @@ app.event('app_home_opened', async ({ event, client }) => {
 const healthCheckApp = express();
 
 healthCheckApp.get('/health', (req, res) => {
+  const totalPages = docsCache.sites ? docsCache.sites.reduce((sum, site) => sum + site.pages.length, 0) : 0;
   res.status(200).json({
     status: 'ok',
-    docsLoaded: docsCache.data.length,
+    sitesLoaded: docsCache.sites ? docsCache.sites.length : 0,
+    totalPages: totalPages,
     lastUpdated: docsCache.lastUpdated ? new Date(docsCache.lastUpdated).toISOString() : 'never',
-    docsUrl: DOCS_BASE_URL
+    sites: DOCS_SITES.map(s => s.title)
   });
 });
 
@@ -548,18 +479,24 @@ healthCheckApp.get('/', (req, res) => {
   
   // Preload documentation cache
   try {
-    docsCache.data = await fetchDocumentation();
+    docsCache.sites = await fetchDocumentation();
     docsCache.lastUpdated = Date.now();
-    console.log(`\n✅ Successfully loaded ${docsCache.data.length} documentation pages from ${DOCS_BASE_URL}`);
-    console.log(`\nPage titles loaded:`);
-    docsCache.data.slice(0, 10).forEach((doc, i) => {
-      console.log(`  ${i + 1}. ${doc.title} (${doc.url})`);
+    
+    const totalPages = docsCache.sites.reduce((sum, site) => sum + site.pages.length, 0);
+    console.log(`\n✅ Successfully loaded ${totalPages} pages from ${docsCache.sites.length} documentation sites`);
+    
+    console.log(`\nSites loaded:`);
+    docsCache.sites.forEach((site, i) => {
+      console.log(`  ${i + 1}. ${site.title} - ${site.pages.length} pages`);
+      site.pages.slice(0, 5).forEach((page, j) => {
+        console.log(`     • ${page.title}`);
+      });
+      if (site.pages.length > 5) {
+        console.log(`     ... and ${site.pages.length - 5} more pages`);
+      }
     });
-    if (docsCache.data.length > 10) {
-      console.log(`  ... and ${docsCache.data.length - 10} more pages`);
-    }
   } catch (error) {
     console.error('⚠️  Failed to preload documentation:', error.message);
-    console.error('The bot will still start, but searches may fail until docs are loaded.');
+    console.error('The bot will still start, but the directory may be empty until docs are loaded.');
   }
 })();
