@@ -289,74 +289,53 @@ async function fetchDocumentation() {
   }
 }
 
-// Function to format hierarchical display for Slack - Option A format
-function formatHierarchyForSlack(pages) {
-  // Group pages by their parent section
-  const sections = {};
-  const rootPages = [];
+// Function to format hierarchical display for Slack - Correct format
+function formatHierarchyForSlack(pages, siteTitle) {
+  // Find root page and organize by phase
+  let rootPage = null;
+  const phases = {};
   
   pages.forEach(page => {
     if (!page.breadcrumb) {
-      rootPages.push(page);
       return;
     }
     
     const parts = page.breadcrumb.split(' > ');
     
     if (parts.length === 1) {
-      // Root level page (like "Customer Lifecycle Documentation")
-      rootPages.push(page);
+      // Root page (e.g., "Intelligent Agency — Customer Lifecycle Documentation")
+      rootPage = page;
     } else if (parts.length === 2) {
-      // Section overview page (like "Customer Lifecycle > M1 - Initial Sales Meeting")
-      const sectionName = parts[1];
-      if (!sections[sectionName]) {
-        sections[sectionName] = {
-          overview: null,
+      // Phase overview page (e.g., "Root > M1 — Initial Sales Meeting")
+      const phaseName = parts[1];
+      if (!phases[phaseName]) {
+        phases[phaseName] = {
+          header: phaseName,
           documents: []
         };
       }
-      sections[sectionName].overview = page;
     } else if (parts.length === 3) {
-      // Document under a section (like "Customer Lifecycle > M1 - Initial Sales Meeting > Agenda")
-      const sectionName = parts[1];
-      if (!sections[sectionName]) {
-        sections[sectionName] = {
-          overview: null,
+      // Document under a phase (e.g., "Root > M1 — Initial Sales Meeting > M1: Initial Sales Meeting")
+      const phaseName = parts[1];
+      if (!phases[phaseName]) {
+        phases[phaseName] = {
+          header: phaseName,
           documents: []
         };
       }
-      sections[sectionName].documents.push({
-        ...page,
-        docType: parts[2]
-      });
-    } else {
-      // Deeper nesting (like Day 1 client docs)
-      const sectionName = parts[1];
-      if (!sections[sectionName]) {
-        sections[sectionName] = {
-          overview: null,
-          documents: []
-        };
-      }
-      sections[sectionName].documents.push({
-        ...page,
-        docType: parts.slice(2).join(' > ')
-      });
+      phases[phaseName].documents.push(page);
     }
   });
   
   const lines = [];
   
-  // Add root pages first (if any)
-  rootPages.forEach(page => {
-    lines.push(`• <${page.url}|${page.title}>`);
-  });
-  
-  if (rootPages.length > 0 && Object.keys(sections).length > 0) {
-    lines.push(''); // Blank line after root pages
+  // Add root page as clickable link at top
+  if (rootPage) {
+    lines.push(`• <${rootPage.url}|${rootPage.title}>`);
+    lines.push(''); // Blank line
   }
   
-  // Sort sections by a logical order (M1, M2, M3, Day 1, POC, Pilot, Program, Partnership)
+  // Sort phases in logical order
   const orderMap = {
     'M1': 1,
     'M2': 2,
@@ -368,44 +347,51 @@ function formatHierarchyForSlack(pages) {
     'Partnership': 8
   };
   
-  const sortedSections = Object.keys(sections).sort((a, b) => {
-    const aKey = a.split(' ')[0].replace('-', '');
-    const bKey = b.split(' ')[0].replace('-', '');
+  const sortedPhases = Object.keys(phases).sort((a, b) => {
+    const aKey = a.split(' ')[0].replace('—', '').trim();
+    const bKey = b.split(' ')[0].replace('—', '').trim();
     const aOrder = orderMap[aKey] || 999;
     const bOrder = orderMap[bKey] || 999;
     return aOrder - bOrder;
   });
   
-  // Format each section
-  sortedSections.forEach((sectionName, index) => {
-    const section = sections[sectionName];
+  // Format each phase
+  sortedPhases.forEach((phaseName, index) => {
+    const phase = phases[phaseName];
     
-    // Section header (bold)
-    lines.push(`*${sectionName}*`);
+    // Phase header (NOT a link, just bold text)
+    lines.push(`*${phase.header}*`);
     
-    // Overview page first (if exists)
-    if (section.overview) {
-      lines.push(`  • <${section.overview.url}|${section.overview.title}>`);
-    }
-    
-    // Sort documents (Agenda first, then Playbook, then others)
-    const sortedDocs = section.documents.sort((a, b) => {
-      const aType = a.docType.toLowerCase();
-      const bType = b.docType.toLowerCase();
-      if (aType.includes('agenda')) return -1;
-      if (bType.includes('agenda')) return 1;
-      if (aType.includes('playbook')) return -1;
-      if (bType.includes('playbook')) return 1;
-      return aType.localeCompare(bType);
+    // Sort documents (Agenda-like first, then Playbook-like, then others)
+    const sortedDocs = phase.documents.sort((a, b) => {
+      const aTitle = a.title.toLowerCase();
+      const bTitle = b.title.toLowerCase();
+      
+      // Agenda/meeting pages first
+      const aIsAgenda = aTitle.includes('agenda') || (aTitle.includes(':') && !aTitle.includes('playbook'));
+      const bIsAgenda = bTitle.includes('agenda') || (bTitle.includes(':') && !bTitle.includes('playbook'));
+      
+      if (aIsAgenda && !bIsAgenda) return -1;
+      if (!aIsAgenda && bIsAgenda) return 1;
+      
+      // Playbook pages second
+      const aIsPlaybook = aTitle.includes('playbook');
+      const bIsPlaybook = bTitle.includes('playbook');
+      
+      if (aIsPlaybook && !bIsPlaybook) return -1;
+      if (!aIsPlaybook && bIsPlaybook) return 1;
+      
+      // Otherwise alphabetical
+      return aTitle.localeCompare(bTitle);
     });
     
-    // Add documents
+    // Add documents as indented bullets
     sortedDocs.forEach(doc => {
       lines.push(`  • <${doc.url}|${doc.title}>`);
     });
     
-    // Add spacing between sections (unless it's the last one)
-    if (index < sortedSections.length - 1) {
+    // Add spacing between phases (unless it's the last one)
+    if (index < sortedPhases.length - 1) {
       lines.push('');
     }
   });
