@@ -289,10 +289,10 @@ async function fetchDocumentation() {
   }
 }
 
-// Function to build hierarchical tree from breadcrumbs
-function buildHierarchy(pages) {
-  // Group pages by breadcrumb path
-  const tree = {};
+// Function to format hierarchical display for Slack - Option A format
+function formatHierarchyForSlack(pages) {
+  // Group pages by their parent section
+  const sections = {};
   const rootPages = [];
   
   pages.forEach(page => {
@@ -302,87 +302,112 @@ function buildHierarchy(pages) {
     }
     
     const parts = page.breadcrumb.split(' > ');
-    const depth = parts.length;
     
-    // Create a sortable key for proper ordering
-    const sortKey = `${depth}-${page.breadcrumb}`;
-    
-    if (!tree[sortKey]) {
-      tree[sortKey] = [];
+    if (parts.length === 1) {
+      // Root level page (like "Customer Lifecycle Documentation")
+      rootPages.push(page);
+    } else if (parts.length === 2) {
+      // Section overview page (like "Customer Lifecycle > M1 - Initial Sales Meeting")
+      const sectionName = parts[1];
+      if (!sections[sectionName]) {
+        sections[sectionName] = {
+          overview: null,
+          documents: []
+        };
+      }
+      sections[sectionName].overview = page;
+    } else if (parts.length === 3) {
+      // Document under a section (like "Customer Lifecycle > M1 - Initial Sales Meeting > Agenda")
+      const sectionName = parts[1];
+      if (!sections[sectionName]) {
+        sections[sectionName] = {
+          overview: null,
+          documents: []
+        };
+      }
+      sections[sectionName].documents.push({
+        ...page,
+        docType: parts[2]
+      });
+    } else {
+      // Deeper nesting (like Day 1 client docs)
+      const sectionName = parts[1];
+      if (!sections[sectionName]) {
+        sections[sectionName] = {
+          overview: null,
+          documents: []
+        };
+      }
+      sections[sectionName].documents.push({
+        ...page,
+        docType: parts.slice(2).join(' > ')
+      });
     }
-    
-    tree[sortKey].push({
-      ...page,
-      parts: parts,
-      depth: depth
-    });
   });
   
-  // Sort by breadcrumb path
-  const sorted = Object.keys(tree).sort().flatMap(key => tree[key]);
-  
-  return { root: rootPages, hierarchy: sorted };
-}
-
-// Function to format hierarchical display for Slack
-function formatHierarchyForSlack(pages) {
-  const { root, hierarchy } = buildHierarchy(pages);
   const lines = [];
   
   // Add root pages first (if any)
-  root.forEach(page => {
+  rootPages.forEach(page => {
     lines.push(`• <${page.url}|${page.title}>`);
   });
   
-  let lastDepth = 0;
-  let lastParts = [];
+  if (rootPages.length > 0 && Object.keys(sections).length > 0) {
+    lines.push(''); // Blank line after root pages
+  }
   
-  hierarchy.forEach(page => {
-    const { parts, depth, url, title } = page;
+  // Sort sections by a logical order (M1, M2, M3, Day 1, POC, Pilot, Program, Partnership)
+  const orderMap = {
+    'M1': 1,
+    'M2': 2,
+    'M3': 3,
+    'Day 1': 4,
+    'POC': 5,
+    'PILOT': 6,
+    'Program': 7,
+    'Partnership': 8
+  };
+  
+  const sortedSections = Object.keys(sections).sort((a, b) => {
+    const aKey = a.split(' ')[0].replace('-', '');
+    const bKey = b.split(' ')[0].replace('-', '');
+    const aOrder = orderMap[aKey] || 999;
+    const bOrder = orderMap[bKey] || 999;
+    return aOrder - bOrder;
+  });
+  
+  // Format each section
+  sortedSections.forEach((sectionName, index) => {
+    const section = sections[sectionName];
     
-    // Determine if we need to show parent headers
-    let indent = '';
+    // Section header (bold)
+    lines.push(`*${sectionName}*`);
     
-    if (depth === 1) {
-      // Top level - no indent, just bullet
-      indent = '';
-    } else if (depth === 2) {
-      // Second level - check if we need to show parent
-      if (lastDepth < 2 || lastParts[0] !== parts[0]) {
-        // New top-level section
-        lines.push(`\n*${parts[0]}*`);
-      }
-      indent = '  ';
-    } else if (depth === 3) {
-      // Third level
-      if (lastDepth < 3 || lastParts[0] !== parts[0] || lastParts[1] !== parts[1]) {
-        // New section or subsection
-        if (lastParts[0] !== parts[0]) {
-          lines.push(`\n*${parts[0]}*`);
-        }
-        if (lastDepth < 3 || lastParts[1] !== parts[1]) {
-          lines.push(`  _${parts[1]}_`);
-        }
-      }
-      indent = '    ';
-    } else if (depth >= 4) {
-      // Fourth level and beyond
-      if (lastParts[0] !== parts[0]) {
-        lines.push(`\n*${parts[0]}*`);
-      }
-      if (lastParts[1] !== parts[1]) {
-        lines.push(`  _${parts[1]}_`);
-      }
-      if (lastDepth < 4 || lastParts[2] !== parts[2]) {
-        lines.push(`    _${parts[2]}_`);
-      }
-      indent = '      ';
+    // Overview page first (if exists)
+    if (section.overview) {
+      lines.push(`  • <${section.overview.url}|${section.overview.title}>`);
     }
     
-    lines.push(`${indent}• <${url}|${title}>`);
+    // Sort documents (Agenda first, then Playbook, then others)
+    const sortedDocs = section.documents.sort((a, b) => {
+      const aType = a.docType.toLowerCase();
+      const bType = b.docType.toLowerCase();
+      if (aType.includes('agenda')) return -1;
+      if (bType.includes('agenda')) return 1;
+      if (aType.includes('playbook')) return -1;
+      if (bType.includes('playbook')) return 1;
+      return aType.localeCompare(bType);
+    });
     
-    lastDepth = depth;
-    lastParts = parts;
+    // Add documents
+    sortedDocs.forEach(doc => {
+      lines.push(`  • <${doc.url}|${doc.title}>`);
+    });
+    
+    // Add spacing between sections (unless it's the last one)
+    if (index < sortedSections.length - 1) {
+      lines.push('');
+    }
   });
   
   return lines.join('\n');
