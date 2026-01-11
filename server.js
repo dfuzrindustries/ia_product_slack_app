@@ -290,9 +290,8 @@ async function fetchDocumentation() {
 }
 
 // Function to format hierarchical display for Slack - Correct format
-function formatHierarchyForSlack(pages, siteTitle) {
-  // Find root page and organize by phase
-  let rootPage = null;
+function formatHierarchyForSlack(pages, siteTitle, siteUrl) {
+  // Organize by phase (skip root page since site title is the link now)
   const phases = {};
   
   pages.forEach(page => {
@@ -303,8 +302,8 @@ function formatHierarchyForSlack(pages, siteTitle) {
     const parts = page.breadcrumb.split(' > ');
     
     if (parts.length === 1) {
-      // Root page (e.g., "Intelligent Agency — Customer Lifecycle Documentation")
-      rootPage = page;
+      // Skip root page - site title is already the link
+      return;
     } else if (parts.length === 2) {
       // Phase overview page (e.g., "Root > M1 — Initial Sales Meeting")
       const phaseName = parts[1];
@@ -329,18 +328,13 @@ function formatHierarchyForSlack(pages, siteTitle) {
   
   const lines = [];
   
-  // Add root page as clickable link at top
-  if (rootPage) {
-    lines.push(`• <${rootPage.url}|${rootPage.title}>`);
-    lines.push(''); // Blank line
-  }
-  
   // Sort phases in logical order
   const orderMap = {
     'M1': 1,
     'M2': 2,
     'M3': 3,
     'Day 1': 4,
+    'Day1': 4,
     'POC': 5,
     'PILOT': 6,
     'Program': 7,
@@ -348,8 +342,8 @@ function formatHierarchyForSlack(pages, siteTitle) {
   };
   
   const sortedPhases = Object.keys(phases).sort((a, b) => {
-    const aKey = a.split(' ')[0].replace('—', '').trim();
-    const bKey = b.split(' ')[0].replace('—', '').trim();
+    const aKey = a.split(' ')[0].replace('—', '').replace('-', '').trim();
+    const bKey = b.split(' ')[0].replace('—', '').replace('-', '').trim();
     const aOrder = orderMap[aKey] || 999;
     const bOrder = orderMap[bKey] || 999;
     return aOrder - bOrder;
@@ -428,12 +422,12 @@ app.command('/product', async ({ command, ack, respond }) => {
     
     // Add each site's pages in hierarchical format
     docsCache.sites.forEach((site, siteIndex) => {
-      // Site title header
+      // Site title header - make it a clickable link
       blocks.push({
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*📁 ${site.title}*`
+          text: `*<${site.url}|📁 ${site.title}>*`
         }
       });
       
@@ -447,8 +441,8 @@ app.command('/product', async ({ command, ack, respond }) => {
           }
         });
       } else {
-        // Format pages hierarchically
-        const hierarchyText = formatHierarchyForSlack(site.pages);
+        // Format pages hierarchically (don't include root page since title is the link)
+        const hierarchyText = formatHierarchyForSlack(site.pages, site.title, site.url);
         
         blocks.push({
           type: 'section',
