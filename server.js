@@ -218,7 +218,15 @@ function extractTextFromHtml(html, url) {
   title = title.replace(/ia-customer-lifecycle-md\s+M1\s+M2\s+M3\s+Day 1\s+POC\s+Pilot\s+Program\s+Partnership/gi, '').trim();
   title = title.replace(/Back to Home\s+M1\s+M2\s+M3\s+Day 1\s+POC\s+Pilot\s+Program\s+Partnership/gi, '').trim();
   
-  return { title, content };
+  // Extract breadcrumb - shows hierarchy position
+  let breadcrumb = '';
+  const breadcrumbMatch = html.match(/<!--\s*BREADCRUMB:\s*(.+?)\s*-->/i);
+  if (breadcrumbMatch) {
+    breadcrumb = breadcrumbMatch[1].trim();
+    console.log(`  🗂️  Found BREADCRUMB: "${breadcrumb}"`);
+  }
+  
+  return { title, content, breadcrumb };
 }
 
 // Function to fetch all documentation from all sites
@@ -247,12 +255,13 @@ async function fetchDocumentation() {
             if (!response.ok) return null;
             
             const html = await response.text();
-            const { title, content } = extractTextFromHtml(html, url);
+            const { title, content, breadcrumb } = extractTextFromHtml(html, url);
             
             return {
               url: url,
               title: title,
               content: content,
+              breadcrumb: breadcrumb || '',
               path: url.replace(site.url, '') || '/'
             };
           } catch (error) {
@@ -278,6 +287,105 @@ async function fetchDocumentation() {
     console.error('Error fetching documentation:', error);
     throw error;
   }
+}
+
+// Function to build hierarchical tree from breadcrumbs
+function buildHierarchy(pages) {
+  // Group pages by breadcrumb path
+  const tree = {};
+  const rootPages = [];
+  
+  pages.forEach(page => {
+    if (!page.breadcrumb) {
+      rootPages.push(page);
+      return;
+    }
+    
+    const parts = page.breadcrumb.split(' > ');
+    const depth = parts.length;
+    
+    // Create a sortable key for proper ordering
+    const sortKey = `${depth}-${page.breadcrumb}`;
+    
+    if (!tree[sortKey]) {
+      tree[sortKey] = [];
+    }
+    
+    tree[sortKey].push({
+      ...page,
+      parts: parts,
+      depth: depth
+    });
+  });
+  
+  // Sort by breadcrumb path
+  const sorted = Object.keys(tree).sort().flatMap(key => tree[key]);
+  
+  return { root: rootPages, hierarchy: sorted };
+}
+
+// Function to format hierarchical display for Slack
+function formatHierarchyForSlack(pages) {
+  const { root, hierarchy } = buildHierarchy(pages);
+  const lines = [];
+  
+  // Add root pages first (if any)
+  root.forEach(page => {
+    lines.push(`• <${page.url}|${page.title}>`);
+  });
+  
+  let lastDepth = 0;
+  let lastParts = [];
+  
+  hierarchy.forEach(page => {
+    const { parts, depth, url, title } = page;
+    
+    // Determine if we need to show parent headers
+    let indent = '';
+    
+    if (depth === 1) {
+      // Top level - no indent, just bullet
+      indent = '';
+    } else if (depth === 2) {
+      // Second level - check if we need to show parent
+      if (lastDepth < 2 || lastParts[0] !== parts[0]) {
+        // New top-level section
+        lines.push(`\n*${parts[0]}*`);
+      }
+      indent = '  ';
+    } else if (depth === 3) {
+      // Third level
+      if (lastDepth < 3 || lastParts[0] !== parts[0] || lastParts[1] !== parts[1]) {
+        // New section or subsection
+        if (lastParts[0] !== parts[0]) {
+          lines.push(`\n*${parts[0]}*`);
+        }
+        if (lastDepth < 3 || lastParts[1] !== parts[1]) {
+          lines.push(`  _${parts[1]}_`);
+        }
+      }
+      indent = '    ';
+    } else if (depth >= 4) {
+      // Fourth level and beyond
+      if (lastParts[0] !== parts[0]) {
+        lines.push(`\n*${parts[0]}*`);
+      }
+      if (lastParts[1] !== parts[1]) {
+        lines.push(`  _${parts[1]}_`);
+      }
+      if (lastDepth < 4 || lastParts[2] !== parts[2]) {
+        lines.push(`    _${parts[2]}_`);
+      }
+      indent = '      ';
+    }
+    
+    lines.push(`${indent}• <${url}|${title}>`);
+    
+    lastDepth = depth;
+    lastParts = parts;
+  });
+  
+  return lines.join('\n');
 }
 
 // Slash command handler for /product - displays directory of all docs
@@ -307,18 +415,18 @@ app.command('/product', async ({ command, ack, respond }) => {
       }
     ];
     
-    // Add each site's pages
+    // Add each site's pages in hierarchical format
     docsCache.sites.forEach((site, siteIndex) => {
-      // Site title
+      // Site title header
       blocks.push({
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*${site.title}*`
+          text: `*📁 ${site.title}*`
         }
       });
       
-      // Page list
+      // Hierarchical page list
       if (site.pages.length === 0) {
         blocks.push({
           type: 'section',
@@ -328,16 +436,14 @@ app.command('/product', async ({ command, ack, respond }) => {
           }
         });
       } else {
-        // Format pages as a bulleted list with links
-        const pageList = site.pages
-          .map(page => `• <${page.url}|${page.title}>`)
-          .join('\n');
+        // Format pages hierarchically
+        const hierarchyText = formatHierarchyForSlack(site.pages);
         
         blocks.push({
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: pageList
+            text: hierarchyText
           }
         });
       }
