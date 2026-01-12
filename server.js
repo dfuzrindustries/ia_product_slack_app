@@ -440,6 +440,15 @@ app.command('/product', async ({ command, ack, respond }) => {
         }
       },
       {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: '⚠️ *These documents are work in progress and will be updated often.* Your feedback is important — feel free to submit feedback to the #product slack channel.'
+          }
+        ]
+      },
+      {
         type: 'divider'
       }
     ];
