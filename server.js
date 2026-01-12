@@ -289,108 +289,102 @@ async function fetchDocumentation() {
   }
 }
 
-// Function to format hierarchical display for Slack - Correct format
-function formatHierarchyForSlack(pages, siteTitle, siteUrl) {
-  // Organize by phase (skip root page since site title is the link now)
-  const phases = {};
+// Function to build hierarchical tree from breadcrumbs (following official instructions)
+function buildHierarchyTree(pages) {
+  const tree = {};
   
   pages.forEach(page => {
-    if (!page.breadcrumb) {
-      return;
-    }
+    if (!page.breadcrumb) return;
     
     const parts = page.breadcrumb.split(' > ');
+    let current = tree;
     
-    if (parts.length === 1) {
-      // Skip root page - site title is already the link
-      return;
-    } else if (parts.length === 2) {
-      // Phase overview page (e.g., "Root > M1 — Initial Sales Meeting")
-      const phaseName = parts[1];
-      if (!phases[phaseName]) {
-        phases[phaseName] = {
-          header: phaseName,
-          documents: []
+    parts.forEach((part, i) => {
+      if (!current[part]) {
+        current[part] = {
+          _children: {},
+          _filepath: null,
+          _url: null,
+          _title: null,
+          _level: i
         };
       }
-    } else if (parts.length === 3) {
-      // Document under a phase (e.g., "Root > M1 — Initial Sales Meeting > M1: Initial Sales Meeting")
-      const phaseName = parts[1];
-      if (!phases[phaseName]) {
-        phases[phaseName] = {
-          header: phaseName,
-          documents: []
-        };
+      
+      // Store metadata at the leaf node
+      if (i === parts.length - 1) {
+        current[part]._filepath = page.path;
+        current[part]._url = page.url;
+        current[part]._title = page.title;
       }
-      phases[phaseName].documents.push(page);
-    }
+      
+      current = current[part]._children;
+    });
   });
   
+  return tree;
+}
+
+// Function to format tree for Slack display
+function formatTreeForSlack(tree, level = 0) {
   const lines = [];
   
-  // Sort phases in logical order
-  const orderMap = {
-    'M1': 1,
-    'M2': 2,
-    'M3': 3,
-    'Day 1': 4,
-    'Day1': 4,
-    'POC': 5,
-    'PILOT': 6,
-    'Program': 7,
-    'Partnership': 8
-  };
-  
-  const sortedPhases = Object.keys(phases).sort((a, b) => {
-    const aKey = a.split(' ')[0].replace('—', '').replace('-', '').trim();
-    const bKey = b.split(' ')[0].replace('—', '').replace('-', '').trim();
-    const aOrder = orderMap[aKey] || 999;
-    const bOrder = orderMap[bKey] || 999;
-    return aOrder - bOrder;
-  });
-  
-  // Format each phase
-  sortedPhases.forEach((phaseName, index) => {
-    const phase = phases[phaseName];
-    
-    // Phase header (NOT a link, just bold text)
-    lines.push(`*${phase.header}*`);
-    
-    // Sort documents (Agenda-like first, then Playbook-like, then others)
-    const sortedDocs = phase.documents.sort((a, b) => {
-      const aTitle = a.title.toLowerCase();
-      const bTitle = b.title.toLowerCase();
+  // Sort entries
+  const entries = Object.keys(tree)
+    .filter(key => !key.startsWith('_'))
+    .sort((a, b) => {
+      // Apply phase ordering
+      const orderMap = {
+        'M1': 1, 'M2': 2, 'M3': 3,
+        'Day 1': 4, 'Day1': 4,
+        'POC': 5, 'PILOT': 6,
+        'Program': 7, 'Partnership': 8
+      };
       
-      // Agenda/meeting pages first
-      const aIsAgenda = aTitle.includes('agenda') || (aTitle.includes(':') && !aTitle.includes('playbook'));
-      const bIsAgenda = bTitle.includes('agenda') || (bTitle.includes(':') && !bTitle.includes('playbook'));
+      const aKey = a.split(' ')[0].replace(/—|-/g, '').trim();
+      const bKey = b.split(' ')[0].replace(/—|-/g, '').trim();
+      const aOrder = orderMap[aKey] || 999;
+      const bOrder = orderMap[bKey] || 999;
       
-      if (aIsAgenda && !bIsAgenda) return -1;
-      if (!aIsAgenda && bIsAgenda) return 1;
-      
-      // Playbook pages second
-      const aIsPlaybook = aTitle.includes('playbook');
-      const bIsPlaybook = bTitle.includes('playbook');
-      
-      if (aIsPlaybook && !bIsPlaybook) return -1;
-      if (!aIsPlaybook && bIsPlaybook) return 1;
-      
-      // Otherwise alphabetical
-      return aTitle.localeCompare(bTitle);
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return a.localeCompare(b);
     });
+  
+  entries.forEach((name, index) => {
+    const node = tree[name];
+    const hasChildren = Object.keys(node._children).some(k => !k.startsWith('_'));
+    const indent = '  '.repeat(level);
     
-    // Add documents as indented bullets
-    sortedDocs.forEach(doc => {
-      lines.push(`  • <${doc.url}|${doc.title}>`);
-    });
-    
-    // Add spacing between phases (unless it's the last one)
-    if (index < sortedPhases.length - 1) {
-      lines.push('');
+    if (level === 0) {
+      // Root level - skip (site title is already shown)
+      if (hasChildren) {
+        lines.push(...formatTreeForSlack(node._children, level + 1));
+      }
+    } else if (level === 1) {
+      // Phase level - bold header, not clickable
+      lines.push(`*${name}*`);
+      
+      if (hasChildren) {
+        lines.push(...formatTreeForSlack(node._children, level + 1));
+      }
+      
+      // Add spacing between phases
+      if (index < entries.length - 1) {
+        lines.push('');
+      }
+    } else {
+      // Document level - indented bullet with link
+      if (node._url && node._title) {
+        lines.push(`  • <${node._url}|${node._title}>`);
+      }
+      
+      // Handle deeper nesting if needed
+      if (hasChildren) {
+        lines.push(...formatTreeForSlack(node._children, level + 1));
+      }
     }
   });
   
-  return lines.join('\n');
+  return lines;
 }
 
 // Slash command handler for /product - displays directory of all docs
@@ -441,8 +435,10 @@ app.command('/product', async ({ command, ack, respond }) => {
           }
         });
       } else {
-        // Format pages hierarchically (don't include root page since title is the link)
-        const hierarchyText = formatHierarchyForSlack(site.pages, site.title, site.url);
+        // Build hierarchy tree following official instructions
+        const tree = buildHierarchyTree(site.pages);
+        const hierarchyLines = formatTreeForSlack(tree);
+        const hierarchyText = hierarchyLines.join('\n');
         
         blocks.push({
           type: 'section',
