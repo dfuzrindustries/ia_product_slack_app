@@ -320,7 +320,8 @@ function buildHierarchyTree(pages) {
         };
       }
       
-      // Store metadata at the leaf node
+      // Store metadata when this is the final part (leaf node for this page)
+      // This allows each level to have its own page (e.g., M1 README at level 1)
       if (i === parts.length - 1) {
         current[part]._filepath = page.path;
         current[part]._url = page.url;
@@ -338,20 +339,33 @@ function buildHierarchyTree(pages) {
 function formatTreeForSlack(tree, level = 0) {
   const lines = [];
   
-  // Sort entries
+  // Sort entries in exact phase order
   const entries = Object.keys(tree)
     .filter(key => !key.startsWith('_'))
     .sort((a, b) => {
-      // Apply phase ordering
+      // Apply exact phase ordering: M1 > M2 > M3 > Day 1 > POC > Pilot > Program > Partnership
       const orderMap = {
-        'M1': 1, 'M2': 2, 'M3': 3,
-        'Day 1': 4, 'Day1': 4,
-        'POC': 5, 'PILOT': 6,
-        'Program': 7, 'Partnership': 8
+        'M1': 1,
+        'M2': 2,
+        'M3': 3,
+        'Day 1': 4,
+        'Day1': 4,
+        'POC': 5,
+        'PILOT': 6,
+        'Pilot': 6,
+        'Program': 7,
+        'Partnership': 8
       };
       
-      const aKey = a.split(' ')[0].replace(/—|-/g, '').trim();
-      const bKey = b.split(' ')[0].replace(/—|-/g, '').trim();
+      // Extract key from phase name (e.g., "M1 — Initial Sales Meeting" -> "M1")
+      const extractKey = (name) => {
+        // Try to match M1, M2, M3, Day 1, POC, PILOT, etc.
+        const match = name.match(/^(M\d+|Day\s*\d+|POC|PILOT|Pilot|Program|Partnership)/i);
+        return match ? match[1].trim() : name.split(/\s+—\s+/)[0].trim();
+      };
+      
+      const aKey = extractKey(a);
+      const bKey = extractKey(b);
       const aOrder = orderMap[aKey] || 999;
       const bOrder = orderMap[bKey] || 999;
       
@@ -370,8 +384,14 @@ function formatTreeForSlack(tree, level = 0) {
         lines.push(...formatTreeForSlack(node._children, level + 1));
       }
     } else if (level === 1) {
-      // Phase level - bold header, not clickable
-      lines.push(`*${name}*`);
+      // Phase level - bold header WITH LINK to README
+      if (node._url && node._title) {
+        // Phase has its own page (README) - make it clickable
+        lines.push(`*<${node._url}|${name}>*`);
+      } else {
+        // Phase has no README - just bold text
+        lines.push(`*${name}*`);
+      }
       
       if (hasChildren) {
         lines.push(...formatTreeForSlack(node._children, level + 1));
