@@ -218,6 +218,16 @@ function extractTextFromHtml(html, url) {
   title = title.replace(/ia-customer-lifecycle-md\s+M1\s+M2\s+M3\s+Day 1\s+POC\s+Pilot\s+Program\s+Partnership/gi, '').trim();
   title = title.replace(/Back to Home\s+M1\s+M2\s+M3\s+Day 1\s+POC\s+Pilot\s+Program\s+Partnership/gi, '').trim();
   
+  // If title is still a URL slug, clean it up
+  if (title.includes('-md') || title.match(/^[a-z-]+$/)) {
+    title = title
+      .replace(/ia-customer-lifecycle-md/gi, 'Customer Lifecycle')
+      .replace(/ia-frameworks-and-references-md/gi, 'Frameworks & References')
+      .replace(/-/g, ' ')
+      .replace(/\b\w/g, l => l.toUpperCase()) // Title case
+      .trim();
+  }
+  
   // Extract breadcrumb - shows hierarchy position
   let breadcrumb = '';
   const breadcrumbMatch = html.match(/<!--\s*BREADCRUMB:\s*(.+?)\s*-->/i);
@@ -440,13 +450,31 @@ app.command('/product', async ({ command, ack, respond }) => {
         const hierarchyLines = formatTreeForSlack(tree);
         const hierarchyText = hierarchyLines.join('\n');
         
-        blocks.push({
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: hierarchyText
-          }
-        });
+        console.log(`Built hierarchy for ${site.title}: ${hierarchyLines.length} lines, ${hierarchyText.length} chars`);
+        
+        // Only add block if there's content (prevents Slack 500 error)
+        if (hierarchyText.trim().length > 0) {
+          blocks.push({
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: hierarchyText
+            }
+          });
+        } else {
+          // No breadcrumbs found - show simple list
+          const simpleList = site.pages
+            .map(page => `• <${page.url}|${page.title}>`)
+            .join('\n');
+          
+          blocks.push({
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: simpleList || '_No pages with breadcrumbs found_'
+            }
+          });
+        }
       }
       
       // Add spacing between sites (unless it's the last one)
